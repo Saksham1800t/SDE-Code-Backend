@@ -17,7 +17,18 @@ function escapeRegExp(str: string): string {
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => {
     const uploadDir = path.join(__dirname, '../../uploads/extensions');
-    fs.mkdirSync(uploadDir, { recursive: true });
+    try {
+      fs.mkdirSync(uploadDir, { recursive: true });
+    } catch (err) {
+      // A throw here previously bypassed the route handler's own try/catch entirely (this
+      // callback runs inside multer's middleware, before the route body executes), falling
+      // through to Express's generic error handler and surfacing a bare "ENOTDIR, not a
+      // directory" with no context. Passing it to cb() instead routes it through Express's
+      // normal error-handling chain (see the errorHandler middleware in index.ts), which
+      // returns a proper JSON body the desktop app's publish flow can actually display.
+      cb(err instanceof Error ? err : new Error(String(err)), uploadDir);
+      return;
+    }
     cb(null, uploadDir);
   },
   filename: (_req, file, cb) => {

@@ -1,6 +1,6 @@
 // Must be the first import, or later modules may read process.env before dotenv populates it.
 import 'dotenv/config';
-import express from 'express';
+import express, { NextFunction, Request, Response } from 'express';
 import mongoose from 'mongoose';
 import cors from 'cors';
 import authRoutes from './routes/auth';
@@ -36,6 +36,17 @@ app.use('/api/themes', themeRoutes);
 // Health check endpoint
 app.get('/health', (_req, res) => {
   res.json({ status: 'healthy', database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected' });
+});
+
+// Catches anything a route/middleware passes to next(err) instead of handling itself (e.g.
+// multer's disk-storage destination callback) and any synchronous throw Express itself catches.
+// Must be registered after every other app.use()/route — Express identifies error middleware
+// by its 4-parameter signature and only reaches it once something calls next(err). Without this,
+// such an error falls through to Express's own default handler, which sends a bare/minimal
+// response instead of the JSON shape every route here already returns for its own errors.
+app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
+  console.error('Unhandled request error:', err);
+  res.status(500).json({ message: 'Internal server error.', error: err.message });
 });
 
 // Database connection & Server Boot

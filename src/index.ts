@@ -9,6 +9,7 @@ import dns from 'dns';
 import extensionRoutes from './routes/extensions';
 import themeRoutes from './routes/themes';
 import suggestionRoutes from './routes/suggestions';
+import downloadStatsRoutes from './routes/downloadStats';
 import { seedDefaultThemes } from './db/themeSeeder';
 import Extension from './models/Extension';
 
@@ -38,6 +39,7 @@ app.use('/api/sync', syncRoutes);
 app.use('/api/extensions', extensionRoutes);
 app.use('/api/themes', themeRoutes);
 app.use('/api/suggestions', suggestionRoutes);
+app.use('/api/download-stats', downloadStatsRoutes);
 
 // Health check endpoint
 app.get('/health', (_req, res) => {

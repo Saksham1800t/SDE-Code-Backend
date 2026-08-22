@@ -16,13 +16,21 @@ interface DownloadStats {
 
 const EMPTY: DownloadStats = { version: null, windowsDownloadCount: 0, macDownloadCount: 0, totalDownloadCount: 0 };
 
-// In-memory only — this process is the single source of truth for the cache, and a restart
-// simply means the next request repopulates it. GitHub's unauthenticated API caps at 60
-// requests/hour total; without this, real visitor traffic would exhaust that almost immediately
-// and everyone would start seeing stale/failed data instead of just a slightly-delayed number.
+// In-memory only — this process is the single source of truth, and a restart just repopulates
+// it. GitHub's unauthenticated API caps at 60 requests/hour total; without a cache, real visitor
+// traffic would exhaust that almost immediately.
 const CACHE_TTL_MS = 5 * 60 * 1000;
-let cache: { data: DownloadStats; fetchedAt: number } | null = null;
-let inFlight: Promise<DownloadStats> | null = null;
+// How soon a FAILED attempt is retried — much sooner than a successful one, so a transient
+// GitHub/network hiccup self-heals quickly instead of serving wrong data for the full TTL.
+const RETRY_AFTER_FAILURE_MS = 20 * 1000;
+
+// The last successful fetch, kept indefinitely until superseded — a failed refresh attempt
+// never overwrites this, so visitors always see the last known real numbers, not zeros.
+let lastGood: { data: DownloadStats; fetchedAt: number } | null = null;
+// When the most recent attempt (success or failure) happened, independent of lastGood — this is
+// what decides whether to trigger a new fetch, so a failure is retried on its own short timer.
+let lastAttempt: { at: number; ok: boolean } | null = null;
+let inFlight: Promise<{ data: DownloadStats; ok: boolean }> | null = null;
 
 function sumInstallerDownloads(assets: Array<{ name: string; download_count: number }>): number {
   // Only the real installers — .blockmap/.yml assets are fetched by the auto-updater's own
@@ -35,84 +43,66 @@ function sumInstallerDownloads(assets: Array<{ name: string; download_count: num
     .reduce((sum, a) => sum + (a.download_count || 0), 0);
 }
 
-async function fetchFreshStats(): Promise<DownloadStats> {
+async function fetchFreshStats(): Promise<{ data: DownloadStats; ok: boolean }> {
   try {
     const [latestRes, allRes] = await Promise.all([
       fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases/latest`),
       fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=100`),
     ]);
 
-    let version: string | null = null;
-    let windowsDownloadCount = 0;
-    let macDownloadCount = 0;
-    let latestBody: any = null;
-
-    if (latestRes.ok) {
-      latestBody = await latestRes.json();
-      const assets: Array<{ name: string; download_count: number }> = latestBody.assets ?? [];
-      version = typeof latestBody.tag_name === 'string' ? latestBody.tag_name : null;
-      const windowsAsset = assets.find((a) => a.name.toLowerCase().endsWith('.exe'));
-      const macAsset = assets.find((a) => a.name.toLowerCase().endsWith('.dmg'));
-      windowsDownloadCount = windowsAsset?.download_count ?? 0;
-      macDownloadCount = macAsset?.download_count ?? 0;
-    } else {
-      latestBody = await latestRes.text().catch(() => null);
+    if (!latestRes.ok || !allRes.ok) {
+      console.error('Download stats: GitHub API returned non-OK', { latestStatus: latestRes.status, allStatus: allRes.status });
+      return { data: EMPTY, ok: false };
     }
 
-    let totalDownloadCount = 0;
-    let allBody: any = null;
-    if (allRes.ok) {
-      allBody = await allRes.json();
-      if (Array.isArray(allBody)) {
-        totalDownloadCount = allBody.reduce((sum: number, release: any) => sum + sumInstallerDownloads(release.assets ?? []), 0);
-      }
-    } else {
-      allBody = await allRes.text().catch(() => null);
-    }
+    const latest: any = await latestRes.json();
+    const assets: Array<{ name: string; download_count: number }> = latest.assets ?? [];
+    const windowsAsset = assets.find((a) => a.name.toLowerCase().endsWith('.exe'));
+    const macAsset = assets.find((a) => a.name.toLowerCase().endsWith('.dmg'));
 
-    // TEMPORARY diagnostics — remove once the root cause of empty results is confirmed.
-    console.log('download-stats debug:', {
-      latestStatus: latestRes.status,
-      latestOk: latestRes.ok,
-      latestBodySample: typeof latestBody === 'string' ? latestBody.slice(0, 300) : Object.keys(latestBody || {}),
-      allStatus: allRes.status,
-      allOk: allRes.ok,
-    });
+    const all = await allRes.json();
+    const totalDownloadCount = Array.isArray(all)
+      ? all.reduce((sum: number, release: any) => sum + sumInstallerDownloads(release.assets ?? []), 0)
+      : 0;
 
     return {
-      version,
-      windowsDownloadCount,
-      macDownloadCount,
-      totalDownloadCount,
-      _debug: {
-        latestStatus: latestRes.status,
-        latestOk: latestRes.ok,
-        latestBodySample: typeof latestBody === 'string' ? latestBody.slice(0, 300) : null,
-        allStatus: allRes.status,
-        allOk: allRes.ok,
+      data: {
+        version: typeof latest.tag_name === 'string' ? latest.tag_name : null,
+        windowsDownloadCount: windowsAsset?.download_count ?? 0,
+        macDownloadCount: macAsset?.download_count ?? 0,
+        totalDownloadCount,
       },
-    } as any;
-  } catch (err: any) {
+      ok: true,
+    };
+  } catch (err) {
     console.error('Fetch download stats from GitHub failed:', err);
-    return { ...EMPTY, _debug: { error: err?.message || String(err) } } as any;
+    return { data: EMPTY, ok: false };
   }
 }
 
 async function getStats(): Promise<DownloadStats> {
   const now = Date.now();
-  if (cache && now - cache.fetchedAt < CACHE_TTL_MS) {
-    return cache.data;
+  const ttl = lastAttempt?.ok === false ? RETRY_AFTER_FAILURE_MS : CACHE_TTL_MS;
+  const isFresh = lastAttempt && now - lastAttempt.at < ttl;
+
+  if (isFresh && lastGood) {
+    return lastGood.data;
   }
-  // Collapses concurrent requests that land during a cache miss into one upstream fetch,
-  // instead of each one independently hitting GitHub.
+
   if (!inFlight) {
     inFlight = fetchFreshStats().finally(() => {
       inFlight = null;
     });
   }
-  const data = await inFlight;
-  cache = { data, fetchedAt: now };
-  return data;
+  const { data, ok } = await inFlight;
+  lastAttempt = { at: now, ok };
+
+  if (ok) {
+    lastGood = { data, fetchedAt: now };
+    return data;
+  }
+  // Keep serving the last known good numbers through a failure, never zeros.
+  return lastGood?.data ?? EMPTY;
 }
 
 // GET /api/download-stats - Cached, proxied GitHub release download counts.

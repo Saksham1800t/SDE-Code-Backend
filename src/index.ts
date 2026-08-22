@@ -8,6 +8,8 @@ import syncRoutes from './routes/sync';
 import dns from 'dns';
 import extensionRoutes from './routes/extensions';
 import themeRoutes from './routes/themes';
+import likeRoutes from './routes/likes';
+import suggestionRoutes from './routes/suggestions';
 import { seedDefaultThemes } from './db/themeSeeder';
 import Extension from './models/Extension';
 
@@ -22,6 +24,10 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const MONGO_URI = process.env.MONGO_URI || "";
 
+// Railway (like Heroku/Vercel) puts the app behind a reverse proxy — without this, req.ip
+// resolves to the proxy's own address for every request, which would put every visitor in the
+// same bucket for the suggestions route's per-IP rate limit.
+app.set('trust proxy', 1);
 
 // Middleware configuration
 app.use(cors());
@@ -32,6 +38,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/sync', syncRoutes);
 app.use('/api/extensions', extensionRoutes);
 app.use('/api/themes', themeRoutes);
+app.use('/api/likes', likeRoutes);
+app.use('/api/suggestions', suggestionRoutes);
 
 // Health check endpoint
 app.get('/health', (_req, res) => {

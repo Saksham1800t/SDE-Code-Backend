@@ -31,8 +31,9 @@ let lastGood: { data: DownloadStats; fetchedAt: number } | null = null;
 // what decides whether to trigger a new fetch, so a failure is retried on its own short timer.
 let lastAttempt: { at: number; ok: boolean } | null = null;
 let inFlight: Promise<{ data: DownloadStats; ok: boolean }> | null = null;
-// TEMPORARY — captures why the last attempt failed, surfaced only via ?debug=1. Remove once the
-// root cause of the persistent (not just transient) failure is confirmed.
+// Why the last attempt failed, if it did — surfaced only via ?debug=1 (see the route handler).
+// GitHub calls from here have shown occasional transient failures (self-healed by the short
+// retry below); this is what let us confirm they're transient rather than a real bug.
 let lastErrorDetail: unknown = null;
 
 function sumInstallerDownloads(assets: Array<{ name: string; download_count: number }>): number {
@@ -116,7 +117,8 @@ async function getStats(): Promise<DownloadStats> {
 }
 
 // GET /api/download-stats - Cached, proxied GitHub release download counts.
-// ?debug=1 is TEMPORARY, to see why fetchFreshStats is failing — remove alongside lastErrorDetail.
+// ?debug=1 additionally reports the last upstream failure, if any — not linked from anywhere,
+// just a manual troubleshooting aid.
 router.get('/', async (req: Request, res: Response) => {
   try {
     const stats = await getStats();

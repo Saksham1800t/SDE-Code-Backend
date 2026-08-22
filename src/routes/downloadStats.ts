@@ -45,29 +45,56 @@ async function fetchFreshStats(): Promise<DownloadStats> {
     let version: string | null = null;
     let windowsDownloadCount = 0;
     let macDownloadCount = 0;
+    let latestBody: any = null;
 
     if (latestRes.ok) {
-      const latest: any = await latestRes.json();
-      const assets: Array<{ name: string; download_count: number }> = latest.assets ?? [];
-      version = typeof latest.tag_name === 'string' ? latest.tag_name : null;
+      latestBody = await latestRes.json();
+      const assets: Array<{ name: string; download_count: number }> = latestBody.assets ?? [];
+      version = typeof latestBody.tag_name === 'string' ? latestBody.tag_name : null;
       const windowsAsset = assets.find((a) => a.name.toLowerCase().endsWith('.exe'));
       const macAsset = assets.find((a) => a.name.toLowerCase().endsWith('.dmg'));
       windowsDownloadCount = windowsAsset?.download_count ?? 0;
       macDownloadCount = macAsset?.download_count ?? 0;
+    } else {
+      latestBody = await latestRes.text().catch(() => null);
     }
 
     let totalDownloadCount = 0;
+    let allBody: any = null;
     if (allRes.ok) {
-      const all = await allRes.json();
-      if (Array.isArray(all)) {
-        totalDownloadCount = all.reduce((sum: number, release: any) => sum + sumInstallerDownloads(release.assets ?? []), 0);
+      allBody = await allRes.json();
+      if (Array.isArray(allBody)) {
+        totalDownloadCount = allBody.reduce((sum: number, release: any) => sum + sumInstallerDownloads(release.assets ?? []), 0);
       }
+    } else {
+      allBody = await allRes.text().catch(() => null);
     }
 
-    return { version, windowsDownloadCount, macDownloadCount, totalDownloadCount };
-  } catch (err) {
+    // TEMPORARY diagnostics — remove once the root cause of empty results is confirmed.
+    console.log('download-stats debug:', {
+      latestStatus: latestRes.status,
+      latestOk: latestRes.ok,
+      latestBodySample: typeof latestBody === 'string' ? latestBody.slice(0, 300) : Object.keys(latestBody || {}),
+      allStatus: allRes.status,
+      allOk: allRes.ok,
+    });
+
+    return {
+      version,
+      windowsDownloadCount,
+      macDownloadCount,
+      totalDownloadCount,
+      _debug: {
+        latestStatus: latestRes.status,
+        latestOk: latestRes.ok,
+        latestBodySample: typeof latestBody === 'string' ? latestBody.slice(0, 300) : null,
+        allStatus: allRes.status,
+        allOk: allRes.ok,
+      },
+    } as any;
+  } catch (err: any) {
     console.error('Fetch download stats from GitHub failed:', err);
-    return EMPTY;
+    return { ...EMPTY, _debug: { error: err?.message || String(err) } } as any;
   }
 }
 

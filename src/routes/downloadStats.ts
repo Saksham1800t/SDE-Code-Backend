@@ -31,6 +31,9 @@ let lastGood: { data: DownloadStats; fetchedAt: number } | null = null;
 // what decides whether to trigger a new fetch, so a failure is retried on its own short timer.
 let lastAttempt: { at: number; ok: boolean } | null = null;
 let inFlight: Promise<{ data: DownloadStats; ok: boolean }> | null = null;
+// TEMPORARY — captures why the last attempt failed, surfaced only via ?debug=1. Remove once the
+// root cause of the persistent (not just transient) failure is confirmed.
+let lastErrorDetail: unknown = null;
 
 function sumInstallerDownloads(assets: Array<{ name: string; download_count: number }>): number {
   // Only the real installers — .blockmap/.yml assets are fetched by the auto-updater's own
@@ -51,7 +54,13 @@ async function fetchFreshStats(): Promise<{ data: DownloadStats; ok: boolean }> 
     ]);
 
     if (!latestRes.ok || !allRes.ok) {
-      console.error('Download stats: GitHub API returned non-OK', { latestStatus: latestRes.status, allStatus: allRes.status });
+      lastErrorDetail = {
+        latestStatus: latestRes.status,
+        latestStatusText: latestRes.statusText,
+        latestHeaders: Object.fromEntries(latestRes.headers.entries()),
+        allStatus: allRes.status,
+      };
+      console.error('Download stats: GitHub API returned non-OK', lastErrorDetail);
       return { data: EMPTY, ok: false };
     }
 
@@ -74,7 +83,8 @@ async function fetchFreshStats(): Promise<{ data: DownloadStats; ok: boolean }> 
       },
       ok: true,
     };
-  } catch (err) {
+  } catch (err: any) {
+    lastErrorDetail = { thrown: err?.message || String(err), code: err?.cause?.code };
     console.error('Fetch download stats from GitHub failed:', err);
     return { data: EMPTY, ok: false };
   }
@@ -106,9 +116,14 @@ async function getStats(): Promise<DownloadStats> {
 }
 
 // GET /api/download-stats - Cached, proxied GitHub release download counts.
-router.get('/', async (_req: Request, res: Response) => {
+// ?debug=1 is TEMPORARY, to see why fetchFreshStats is failing — remove alongside lastErrorDetail.
+router.get('/', async (req: Request, res: Response) => {
   try {
     const stats = await getStats();
+    if (req.query.debug === '1') {
+      res.json({ ...stats, _lastErrorDetail: lastErrorDetail, _lastAttempt: lastAttempt });
+      return;
+    }
     res.json(stats);
   } catch (err: any) {
     console.error('Download stats route error:', err);

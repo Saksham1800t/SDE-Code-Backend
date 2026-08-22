@@ -7,14 +7,24 @@ const router = Router();
 // while still surfacing the public download_count numbers GitHub tracks per release asset.
 const GITHUB_REPO = 'Saksham1800t/SDE-Code-App';
 
+interface VersionDownloadStats {
+  version: string;
+  windowsDownloadCount: number;
+  macDownloadCount: number;
+  downloadCount: number;
+}
+
 interface DownloadStats {
   version: string | null;
   windowsDownloadCount: number;
   macDownloadCount: number;
   totalDownloadCount: number;
+  // Per-release counts — the versions page shows every release, not just the latest, so it
+  // needs the same live data the download page gets, not the build-time snapshot it used to show.
+  versions: VersionDownloadStats[];
 }
 
-const EMPTY: DownloadStats = { version: null, windowsDownloadCount: 0, macDownloadCount: 0, totalDownloadCount: 0 };
+const EMPTY: DownloadStats = { version: null, windowsDownloadCount: 0, macDownloadCount: 0, totalDownloadCount: 0, versions: [] };
 
 // In-memory only — this process is the single source of truth, and a restart just repopulates
 // it. GitHub's unauthenticated API caps at 60 requests/hour total; without a cache, real visitor
@@ -35,17 +45,6 @@ let inFlight: Promise<{ data: DownloadStats; ok: boolean }> | null = null;
 // GitHub calls from here have shown occasional transient failures (self-healed by the short
 // retry below); this is what let us confirm they're transient rather than a real bug.
 let lastErrorDetail: unknown = null;
-
-function sumInstallerDownloads(assets: Array<{ name: string; download_count: number }>): number {
-  // Only the real installers — .blockmap/.yml assets are fetched by the auto-updater's own
-  // polling, not by someone actually downloading the app, and would inflate this number.
-  return assets
-    .filter((a) => {
-      const n = a.name.toLowerCase();
-      return n.endsWith('.exe') || n.endsWith('.dmg');
-    })
-    .reduce((sum, a) => sum + (a.download_count || 0), 0);
-}
 
 async function fetchFreshStats(): Promise<{ data: DownloadStats; ok: boolean }> {
   try {
@@ -71,9 +70,22 @@ async function fetchFreshStats(): Promise<{ data: DownloadStats; ok: boolean }> 
     const macAsset = assets.find((a) => a.name.toLowerCase().endsWith('.dmg'));
 
     const all = await allRes.json();
-    const totalDownloadCount = Array.isArray(all)
-      ? all.reduce((sum: number, release: any) => sum + sumInstallerDownloads(release.assets ?? []), 0)
-      : 0;
+    const versions: VersionDownloadStats[] = Array.isArray(all)
+      ? all
+          .filter((release: any) => typeof release.tag_name === 'string')
+          .map((release: any) => {
+            const releaseAssets: Array<{ name: string; download_count: number }> = release.assets ?? [];
+            const winCount = releaseAssets.find((a) => a.name.toLowerCase().endsWith('.exe'))?.download_count ?? 0;
+            const macCount = releaseAssets.find((a) => a.name.toLowerCase().endsWith('.dmg'))?.download_count ?? 0;
+            return {
+              version: release.tag_name as string,
+              windowsDownloadCount: winCount,
+              macDownloadCount: macCount,
+              downloadCount: winCount + macCount,
+            };
+          })
+      : [];
+    const totalDownloadCount = versions.reduce((sum, v) => sum + v.downloadCount, 0);
 
     return {
       data: {
@@ -81,6 +93,7 @@ async function fetchFreshStats(): Promise<{ data: DownloadStats; ok: boolean }> 
         windowsDownloadCount: windowsAsset?.download_count ?? 0,
         macDownloadCount: macAsset?.download_count ?? 0,
         totalDownloadCount,
+        versions,
       },
       ok: true,
     };

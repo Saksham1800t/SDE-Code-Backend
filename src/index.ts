@@ -8,7 +8,6 @@ import syncRoutes from './routes/sync';
 import dns from 'dns';
 import extensionRoutes from './routes/extensions';
 import themeRoutes from './routes/themes';
-import likeRoutes from './routes/likes';
 import suggestionRoutes from './routes/suggestions';
 import { seedDefaultThemes } from './db/themeSeeder';
 import Extension from './models/Extension';
@@ -38,7 +37,6 @@ app.use('/api/auth', authRoutes);
 app.use('/api/sync', syncRoutes);
 app.use('/api/extensions', extensionRoutes);
 app.use('/api/themes', themeRoutes);
-app.use('/api/likes', likeRoutes);
 app.use('/api/suggestions', suggestionRoutes);
 
 // Health check endpoint
